@@ -1,16 +1,23 @@
 package tracer
 
 import (
+	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
 )
+
+var debugMem = os.Getenv("FUSS_DEBUG") != ""
 
 func ReadString(pid int, addr uintptr, maxLen int) (string, error) {
 	if addr == 0 {
 		return "", nil
 	}
-	buf := make([]byte, maxLen)
+	buf := make([]byte, 64)
 	n, err := ReadBytes(pid, addr, buf)
+	if debugMem {
+		fmt.Fprintf(os.Stderr, "[FUSS] ReadString: pid=%d addr=%x n=%d err=%v first16=%x\n", pid, addr, n, err, buf[:min(16, max(n, 1))])
+	}
 	if err != nil {
 		return "", err
 	}
@@ -27,25 +34,25 @@ func ReadBytes(pid int, addr uintptr, buf []byte) (int, error) {
 		return 0, nil
 	}
 
-	wordSize := unsafe.Sizeof(uintptr(0))
-	words := (len(buf) + int(wordSize) - 1) / int(wordSize)
+	wordSize := int(unsafe.Sizeof(uintptr(0)))
+	words := (len(buf) + wordSize - 1) / wordSize
 
 	for i := 0; i < words; i++ {
-		word, err := syscall.PtracePeekData(pid, addr+uintptr(i)*wordSize, nil)
+		var wordBuf [8]byte
+		_, err := syscall.PtracePeekData(pid, addr+uintptr(i*wordSize), wordBuf[:])
 		if err != nil {
 			if i == 0 {
 				return 0, err
 			}
-			return i * int(wordSize), nil
+			return i * wordSize, nil
 		}
 
-		wordBytes := (*[8]byte)(unsafe.Pointer(&word))[:]
-		start := i * int(wordSize)
-		end := start + int(wordSize)
+		start := i * wordSize
+		end := start + wordSize
 		if end > len(buf) {
 			end = len(buf)
 		}
-		copy(buf[start:end], wordBytes[:end-start])
+		copy(buf[start:end], wordBuf[:end-start])
 	}
 
 	return len(buf), nil

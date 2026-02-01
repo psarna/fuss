@@ -3,6 +3,7 @@ package tracer
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 	"unsafe"
@@ -62,6 +63,7 @@ type SyscallHandler struct {
 
 func (h *SyscallHandler) HandleEntry() {
 	sysno := h.regs.Orig_rax
+	debugf("syscall entry: %d rdi=%x rsi=%x rdx=%x r10=%x", sysno, h.regs.Rdi, h.regs.Rsi, h.regs.Rdx, h.regs.R10)
 
 	switch sysno {
 	case SYS_OPENAT:
@@ -202,6 +204,7 @@ func (h *SyscallHandler) handleOpenEntry() {
 
 func (h *SyscallHandler) handleCloseEntry() {
 	fd := int(h.regs.Rdi)
+	debugf("close: fd=%d isVirtual=%v", fd, h.tracer.fdTable.IsVirtual(fd))
 
 	if !h.tracer.fdTable.IsVirtual(fd) {
 		return
@@ -209,6 +212,7 @@ func (h *SyscallHandler) handleCloseEntry() {
 
 	h.tracer.fdTable.Close(fd)
 	delete(h.proc.fdPaths, fd)
+	debugf("close: fd=%d success", fd)
 	h.skipSyscall(0)
 }
 
@@ -216,6 +220,7 @@ func (h *SyscallHandler) handleReadEntry() {
 	fd := int(h.regs.Rdi)
 	bufAddr := uintptr(h.regs.Rsi)
 	count := int(h.regs.Rdx)
+	debugf("read: fd=%d count=%d isVirtual=%v", fd, count, h.tracer.fdTable.IsVirtual(fd))
 
 	if !h.tracer.fdTable.IsVirtual(fd) {
 		return
@@ -229,7 +234,12 @@ func (h *SyscallHandler) handleReadEntry() {
 
 	buf := make([]byte, count)
 	n, err := fh.Read(buf)
-	if err != nil && n == 0 {
+	debugf("read: fd=%d result n=%d err=%v", fd, n, err)
+	if n == 0 && err != nil {
+		if err == io.EOF {
+			h.skipSyscall(0)
+			return
+		}
 		h.skipSyscall(errnoFromError(err))
 		return
 	}
@@ -271,6 +281,7 @@ func (h *SyscallHandler) handleWriteEntry() {
 func (h *SyscallHandler) handleFstatEntry() {
 	fd := int(h.regs.Rdi)
 	statAddr := uintptr(h.regs.Rsi)
+	debugf("fstat: fd=%d isVirtual=%v", fd, h.tracer.fdTable.IsVirtual(fd))
 
 	if !h.tracer.fdTable.IsVirtual(fd) {
 		return
