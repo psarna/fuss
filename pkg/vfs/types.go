@@ -1,21 +1,9 @@
 package vfs
 
 import (
-	"io"
 	"syscall"
 	"time"
 )
-
-type FileHandle interface {
-	io.Reader
-	io.Writer
-	io.Seeker
-	io.Closer
-	Stat() (*FileInfo, error)
-	ReadDir(n int) ([]DirEntry, error)
-	Sync() error
-	Truncate(size int64) error
-}
 
 type FileInfo struct {
 	Name    string

@@ -2,114 +2,79 @@ package tracer
 
 import (
 	"sync"
-
-	"fuss/pkg/vfs"
 )
 
-const VirtualFDBase = 1000000
+type DirInfo struct {
+	path   string
+	pos    int
+}
 
 type FDTable struct {
-	mu      sync.RWMutex
-	handles map[int]vfs.FileHandle
-	nextFD  int
-	dirPos  map[int]int
+	mu   sync.RWMutex
+	dirs map[int]*DirInfo
 }
 
 func NewFDTable() *FDTable {
 	return &FDTable{
-		handles: make(map[int]vfs.FileHandle),
-		nextFD:  VirtualFDBase,
-		dirPos:  make(map[int]int),
+		dirs: make(map[int]*DirInfo),
 	}
 }
 
-func (t *FDTable) Allocate(h vfs.FileHandle) int {
+func (t *FDTable) TrackDir(fd int, path string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	fd := t.nextFD
-	t.nextFD++
-	t.handles[fd] = h
-	return fd
+	t.dirs[fd] = &DirInfo{path: path, pos: 0}
 }
 
-func (t *FDTable) Get(fd int) (vfs.FileHandle, bool) {
+func (t *FDTable) GetDir(fd int) (string, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-
-	h, ok := t.handles[fd]
-	return h, ok
+	if d, ok := t.dirs[fd]; ok {
+		return d.path, true
+	}
+	return "", false
 }
 
-func (t *FDTable) Close(fd int) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	h, ok := t.handles[fd]
-	if !ok {
-		return nil
-	}
-
-	delete(t.handles, fd)
-	delete(t.dirPos, fd)
-	return h.Close()
-}
-
-func (t *FDTable) IsVirtual(fd int) bool {
-	return fd >= VirtualFDBase
-}
-
-func (t *FDTable) Dup(oldfd int) (int, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	h, ok := t.handles[oldfd]
-	if !ok {
-		return -1, nil
-	}
-
-	newfd := t.nextFD
-	t.nextFD++
-	t.handles[newfd] = h
-	return newfd, nil
-}
-
-func (t *FDTable) Dup2(oldfd, newfd int) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	h, ok := t.handles[oldfd]
-	if !ok {
-		return nil
-	}
-
-	if existing, ok := t.handles[newfd]; ok {
-		existing.Close()
-	}
-
-	t.handles[newfd] = h
-	return nil
+func (t *FDTable) IsTrackedDir(fd int) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.dirs[fd]
+	return ok
 }
 
 func (t *FDTable) GetDirPos(fd int) int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.dirPos[fd]
+	if d, ok := t.dirs[fd]; ok {
+		return d.pos
+	}
+	return 0
 }
 
 func (t *FDTable) SetDirPos(fd int, pos int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.dirPos[fd] = pos
+	if d, ok := t.dirs[fd]; ok {
+		d.pos = pos
+	}
+}
+
+func (t *FDTable) Close(fd int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.dirs, fd)
+}
+
+func (t *FDTable) Dup(oldfd, newfd int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if d, ok := t.dirs[oldfd]; ok {
+		t.dirs[newfd] = &DirInfo{path: d.path, pos: d.pos}
+	}
 }
 
 func (t *FDTable) CloseAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	for _, h := range t.handles {
-		h.Close()
-	}
-	t.handles = make(map[int]vfs.FileHandle)
-	t.dirPos = make(map[int]int)
+	t.dirs = make(map[int]*DirInfo)
 }

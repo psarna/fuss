@@ -42,20 +42,26 @@ func (fs *OverlayFS) resolve(path string) (realPath string, inUpper bool, err er
 		return upperPath, true, nil
 	}
 
-	for _, lower := range fs.lowerDirs {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "/" {
+		upperDir := filepath.Join(fs.upperDir, dir)
+		if isOpaqueDir(upperDir) {
+			return "", false, syscall.ENOENT
+		}
+	}
+
+	for i, lower := range fs.lowerDirs {
 		lowerPath := filepath.Join(lower, path)
 
-		dir := filepath.Dir(path)
-		if dir != "." && dir != "/" {
-			upperDir := filepath.Join(fs.upperDir, dir)
-			if isOpaqueDir(upperDir) {
-				continue
-			}
+		if isWhiteout(lowerPath) {
+			return "", false, syscall.ENOENT
 		}
 
-		whiteoutPath := filepath.Join(fs.upperDir, filepath.Dir(path), whiteoutName(filepath.Base(path)))
-		if isWhiteout(whiteoutPath) {
-			continue
+		for j := 0; j < i; j++ {
+			higherLowerPath := filepath.Join(fs.lowerDirs[j], path)
+			if isWhiteout(higherLowerPath) {
+				return "", false, syscall.ENOENT
+			}
 		}
 
 		if _, err := os.Lstat(lowerPath); err == nil {
@@ -66,126 +72,61 @@ func (fs *OverlayFS) resolve(path string) (realPath string, inUpper bool, err er
 	return "", false, syscall.ENOENT
 }
 
-func (fs *OverlayFS) Open(path string, flags vfs.OpenFlags, mode uint32) (vfs.FileHandle, error) {
-	if flags.IsCreate() {
-		if err := fs.copyUpParents(path); err != nil {
-			return nil, err
-		}
+func (fs *OverlayFS) ResolveForOpen(path string, flags vfs.OpenFlags, mode uint32) (string, error) {
+	realPath, inUpper, err := fs.resolve(path)
 
+	if flags.IsCreate() && err != nil {
+		if err := fs.copyUpParents(path); err != nil {
+			return "", err
+		}
 		upperPath := filepath.Join(fs.upperDir, path)
 		removeWhiteout(upperPath, fs.whiteoutStyle)
-
-		f, err := os.OpenFile(upperPath, int(flags), os.FileMode(mode))
-		if err != nil {
-			return nil, err
-		}
-		return &overlayHandle{f: f, path: path, fs: fs}, nil
+		return upperPath, nil
 	}
 
-	realPath, inUpper, err := fs.resolve(path)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	if flags.IsWrite() || flags.IsTrunc() {
 		if !inUpper {
 			if err := fs.copyUp(path); err != nil {
-				return nil, err
+				return "", err
 			}
-			realPath = filepath.Join(fs.upperDir, path)
+			return filepath.Join(fs.upperDir, path), nil
 		}
 	}
 
-	f, err := os.OpenFile(realPath, int(flags), os.FileMode(mode))
-	if err != nil {
-		return nil, err
-	}
-
-	return &overlayHandle{f: f, path: path, fs: fs}, nil
+	return realPath, nil
 }
 
-func (fs *OverlayFS) Stat(path string) (*vfs.FileInfo, error) {
+func (fs *OverlayFS) ResolveForStat(path string, followSymlinks bool) (string, error) {
 	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var st syscall.Stat_t
-	if err := syscall.Stat(realPath, &st); err != nil {
-		return nil, err
-	}
-	return vfs.FileInfoFromStat(filepath.Base(path), &st), nil
+	return realPath, err
 }
 
-func (fs *OverlayFS) Lstat(path string) (*vfs.FileInfo, error) {
+func (fs *OverlayFS) ResolvePath(path string) (string, error) {
 	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var st syscall.Stat_t
-	if err := syscall.Lstat(realPath, &st); err != nil {
-		return nil, err
-	}
-	return vfs.FileInfoFromStat(filepath.Base(path), &st), nil
+	return realPath, err
 }
 
-func (fs *OverlayFS) Readlink(path string) (string, error) {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
+func (fs *OverlayFS) PrepareCreate(path string) (string, error) {
+	if err := fs.copyUpParents(path); err != nil {
 		return "", err
 	}
-	return os.Readlink(realPath)
-}
-
-func (fs *OverlayFS) Access(path string, mode uint32) error {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return err
-	}
-	return unix.Access(realPath, mode)
-}
-
-func (fs *OverlayFS) Mkdir(path string, mode uint32) error {
-	if err := fs.copyUpParents(path); err != nil {
-		return err
-	}
-
 	upperPath := filepath.Join(fs.upperDir, path)
 	removeWhiteout(upperPath, fs.whiteoutStyle)
-
-	return os.Mkdir(upperPath, os.FileMode(mode))
+	return upperPath, nil
 }
 
-func (fs *OverlayFS) Rmdir(path string) error {
-	realPath, inUpper, err := fs.resolve(path)
-	if err != nil {
-		return err
+func (fs *OverlayFS) PrepareWrite(path string) (string, error) {
+	if err := fs.copyUp(path); err != nil {
+		return "", err
 	}
-
-	existsInLower := false
-	for _, lower := range fs.lowerDirs {
-		lowerPath := filepath.Join(lower, path)
-		if _, err := os.Lstat(lowerPath); err == nil {
-			existsInLower = true
-			break
-		}
-	}
-
-	if inUpper {
-		if err := syscall.Rmdir(realPath); err != nil {
-			return err
-		}
-	}
-
-	if existsInLower {
-		return fs.createWhiteout(path)
-	}
-
-	return nil
+	return filepath.Join(fs.upperDir, path), nil
 }
 
-func (fs *OverlayFS) Unlink(path string) error {
+func (fs *OverlayFS) PrepareUnlink(path string) error {
 	realPath, inUpper, err := fs.resolve(path)
 	if err != nil {
 		return err
@@ -213,39 +154,40 @@ func (fs *OverlayFS) Unlink(path string) error {
 	return nil
 }
 
-func (fs *OverlayFS) Rename(oldpath, newpath string, flags uint) error {
-	if err := fs.copyUp(oldpath); err != nil {
-		return err
-	}
-	if err := fs.copyUpParents(newpath); err != nil {
-		return err
-	}
-
-	oldUpper := filepath.Join(fs.upperDir, oldpath)
-	newUpper := filepath.Join(fs.upperDir, newpath)
-
-	removeWhiteout(newUpper, fs.whiteoutStyle)
-
-	if err := os.Rename(oldUpper, newUpper); err != nil {
+func (fs *OverlayFS) PrepareRmdir(path string) error {
+	realPath, inUpper, err := fs.resolve(path)
+	if err != nil {
 		return err
 	}
 
+	existsInLower := false
 	for _, lower := range fs.lowerDirs {
-		lowerPath := filepath.Join(lower, oldpath)
+		lowerPath := filepath.Join(lower, path)
 		if _, err := os.Lstat(lowerPath); err == nil {
-			return fs.createWhiteout(oldpath)
+			existsInLower = true
+			break
 		}
+	}
+
+	if inUpper {
+		if err := syscall.Rmdir(realPath); err != nil {
+			return err
+		}
+	}
+
+	if existsInLower {
+		return fs.createWhiteout(path)
 	}
 
 	return nil
 }
 
-func (fs *OverlayFS) Link(oldpath, newpath string) error {
+func (fs *OverlayFS) PrepareRename(oldpath, newpath string) (string, string, error) {
 	if err := fs.copyUp(oldpath); err != nil {
-		return err
+		return "", "", err
 	}
 	if err := fs.copyUpParents(newpath); err != nil {
-		return err
+		return "", "", err
 	}
 
 	oldUpper := filepath.Join(fs.upperDir, oldpath)
@@ -253,223 +195,47 @@ func (fs *OverlayFS) Link(oldpath, newpath string) error {
 
 	removeWhiteout(newUpper, fs.whiteoutStyle)
 
-	return os.Link(oldUpper, newUpper)
+	for _, lower := range fs.lowerDirs {
+		lowerPath := filepath.Join(lower, oldpath)
+		if _, err := os.Lstat(lowerPath); err == nil {
+			if err := fs.createWhiteout(oldpath); err != nil {
+				return "", "", err
+			}
+			break
+		}
+	}
+
+	return oldUpper, newUpper, nil
 }
 
-func (fs *OverlayFS) Symlink(target, linkpath string) error {
+func (fs *OverlayFS) PrepareLink(oldpath, newpath string) (string, string, error) {
+	if err := fs.copyUp(oldpath); err != nil {
+		return "", "", err
+	}
+	if err := fs.copyUpParents(newpath); err != nil {
+		return "", "", err
+	}
+
+	oldUpper := filepath.Join(fs.upperDir, oldpath)
+	newUpper := filepath.Join(fs.upperDir, newpath)
+
+	removeWhiteout(newUpper, fs.whiteoutStyle)
+
+	return oldUpper, newUpper, nil
+}
+
+func (fs *OverlayFS) PrepareSymlink(linkpath string) (string, error) {
 	if err := fs.copyUpParents(linkpath); err != nil {
-		return err
+		return "", err
 	}
 
 	upperPath := filepath.Join(fs.upperDir, linkpath)
 	removeWhiteout(upperPath, fs.whiteoutStyle)
 
-	return os.Symlink(target, upperPath)
+	return upperPath, nil
 }
 
-func (fs *OverlayFS) Chmod(path string, mode uint32) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return os.Chmod(filepath.Join(fs.upperDir, path), os.FileMode(mode))
-}
-
-func (fs *OverlayFS) Chown(path string, uid, gid int) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return os.Chown(filepath.Join(fs.upperDir, path), uid, gid)
-}
-
-func (fs *OverlayFS) Lchown(path string, uid, gid int) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return os.Lchown(filepath.Join(fs.upperDir, path), uid, gid)
-}
-
-func (fs *OverlayFS) Truncate(path string, size int64) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return os.Truncate(filepath.Join(fs.upperDir, path), size)
-}
-
-func (fs *OverlayFS) Utimes(path string, atime, mtime int64) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return unix.Utimes(filepath.Join(fs.upperDir, path), []unix.Timeval{
-		{Sec: atime},
-		{Sec: mtime},
-	})
-}
-
-func (fs *OverlayFS) Getxattr(path, name string) ([]byte, error) {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	dest := make([]byte, 256)
-	n, err := unix.Getxattr(realPath, name, dest)
-	if err != nil {
-		return nil, err
-	}
-	return dest[:n], nil
-}
-
-func (fs *OverlayFS) Setxattr(path, name string, value []byte, flags int) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return unix.Setxattr(filepath.Join(fs.upperDir, path), name, value, flags)
-}
-
-func (fs *OverlayFS) Listxattr(path string) ([]string, error) {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	dest := make([]byte, 4096)
-	n, err := unix.Listxattr(realPath, dest)
-	if err != nil {
-		return nil, err
-	}
-	return splitXattrList(dest[:n]), nil
-}
-
-func (fs *OverlayFS) Removexattr(path, name string) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return unix.Removexattr(filepath.Join(fs.upperDir, path), name)
-}
-
-func (fs *OverlayFS) Lgetxattr(path, name string) ([]byte, error) {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	dest := make([]byte, 256)
-	n, err := unix.Lgetxattr(realPath, name, dest)
-	if err != nil {
-		return nil, err
-	}
-	return dest[:n], nil
-}
-
-func (fs *OverlayFS) Lsetxattr(path, name string, value []byte, flags int) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return unix.Lsetxattr(filepath.Join(fs.upperDir, path), name, value, flags)
-}
-
-func (fs *OverlayFS) Llistxattr(path string) ([]string, error) {
-	realPath, _, err := fs.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	dest := make([]byte, 4096)
-	n, err := unix.Llistxattr(realPath, dest)
-	if err != nil {
-		return nil, err
-	}
-	return splitXattrList(dest[:n]), nil
-}
-
-func (fs *OverlayFS) Lremovexattr(path, name string) error {
-	if err := fs.copyUp(path); err != nil {
-		return err
-	}
-	return unix.Lremovexattr(filepath.Join(fs.upperDir, path), name)
-}
-
-func (fs *OverlayFS) Statfs(path string) (*vfs.StatfsInfo, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(fs.upperDir, &st); err != nil {
-		return nil, err
-	}
-	return &vfs.StatfsInfo{
-		Type:    st.Type,
-		Bsize:   st.Bsize,
-		Blocks:  st.Blocks,
-		Bfree:   st.Bfree,
-		Bavail:  st.Bavail,
-		Files:   st.Files,
-		Ffree:   st.Ffree,
-		Fsid:    st.Fsid.X__val,
-		Namelen: st.Namelen,
-		Frsize:  st.Frsize,
-		Flags:   st.Flags,
-	}, nil
-}
-
-func (fs *OverlayFS) createWhiteout(path string) error {
-	if err := fs.copyUpParents(path); err != nil {
-		return err
-	}
-	return createWhiteout(filepath.Join(fs.upperDir, path), fs.whiteoutStyle)
-}
-
-func splitXattrList(data []byte) []string {
-	var result []string
-	start := 0
-	for i, b := range data {
-		if b == 0 {
-			if i > start {
-				result = append(result, string(data[start:i]))
-			}
-			start = i + 1
-		}
-	}
-	return result
-}
-
-type overlayHandle struct {
-	f    *os.File
-	path string
-	fs   *OverlayFS
-}
-
-func (h *overlayHandle) Read(p []byte) (int, error) {
-	return h.f.Read(p)
-}
-
-func (h *overlayHandle) Write(p []byte) (int, error) {
-	return h.f.Write(p)
-}
-
-func (h *overlayHandle) Seek(offset int64, whence int) (int64, error) {
-	return h.f.Seek(offset, whence)
-}
-
-func (h *overlayHandle) Close() error {
-	return h.f.Close()
-}
-
-func (h *overlayHandle) Stat() (*vfs.FileInfo, error) {
-	fi, err := h.f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	st := fi.Sys().(*syscall.Stat_t)
-	return vfs.FileInfoFromStat(fi.Name(), st), nil
-}
-
-func (h *overlayHandle) ReadDir(n int) ([]vfs.DirEntry, error) {
-	return h.fs.readDir(h.path)
-}
-
-func (h *overlayHandle) Sync() error {
-	return h.f.Sync()
-}
-
-func (h *overlayHandle) Truncate(size int64) error {
-	return h.f.Truncate(size)
-}
-
-func (fs *OverlayFS) readDir(path string) ([]vfs.DirEntry, error) {
+func (fs *OverlayFS) ReadDir(path string) ([]vfs.DirEntry, error) {
 	merger := NewDirMerger()
 
 	upperPath := filepath.Join(fs.upperDir, path)
@@ -506,6 +272,7 @@ func (fs *OverlayFS) readDir(path string) ([]vfs.DirEntry, error) {
 		for _, e := range entries {
 			name := e.Name()
 			if isWhiteoutName(name) {
+				merger.AddWhiteout(whiteoutTarget(name))
 				continue
 			}
 			info, err := e.Info()
@@ -526,6 +293,13 @@ func (fs *OverlayFS) readDir(path string) ([]vfs.DirEntry, error) {
 		result[i].Offset = int64(i + 1)
 	}
 	return result, nil
+}
+
+func (fs *OverlayFS) createWhiteout(path string) error {
+	if err := fs.copyUpParents(path); err != nil {
+		return err
+	}
+	return createWhiteout(filepath.Join(fs.upperDir, path), fs.whiteoutStyle)
 }
 
 func (fs *OverlayFS) copyUp(path string) error {
@@ -658,4 +432,18 @@ func copyXattrs(src, dst string) {
 		}
 		unix.Lsetxattr(dst, name, val[:vn], 0)
 	}
+}
+
+func splitXattrList(data []byte) []string {
+	var result []string
+	start := 0
+	for i, b := range data {
+		if b == 0 {
+			if i > start {
+				result = append(result, string(data[start:i]))
+			}
+			start = i + 1
+		}
+	}
+	return result
 }

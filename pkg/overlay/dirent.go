@@ -30,7 +30,6 @@ func (m *DirMerger) Add(entry vfs.DirEntry) {
 
 func (m *DirMerger) AddWhiteout(name string) {
 	m.whiteouts[name] = true
-	delete(m.entries, name)
 }
 
 func (m *DirMerger) Entries() []vfs.DirEntry {

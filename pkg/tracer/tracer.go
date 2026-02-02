@@ -27,11 +27,24 @@ type Tracer struct {
 	procs    map[int]*ProcessState
 }
 
+type pendingOpen struct {
+	path    string
+	isDir   bool
+	vfsPath string
+}
+
+type pendingDup struct {
+	oldfd int
+	newfd int
+}
+
 type ProcessState struct {
-	pid       int
-	inSyscall bool
-	cwd       string
-	fdPaths   map[int]string
+	pid         int
+	inSyscall   bool
+	cwd         string
+	fdPaths     map[int]string
+	pendingOpen *pendingOpen
+	pendingDup  *pendingDup
 }
 
 func NewTracer(v vfs.VFS, mountpoint string) *Tracer {
