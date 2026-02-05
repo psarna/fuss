@@ -38,14 +38,20 @@ type pendingDup struct {
 	newfd int
 }
 
+type pendingChdir struct {
+	path string
+	fd   int
+}
+
 type ProcessState struct {
-	pid         int
-	inSyscall   bool
-	cwd         string
-	fdPaths     map[int]string
-	pendingOpen *pendingOpen
-	pendingDup  *pendingDup
-	attached    bool
+	pid          int
+	inSyscall    bool
+	cwd          string
+	fdPaths      map[int]string
+	pendingOpen  *pendingOpen
+	pendingDup   *pendingDup
+	pendingChdir *pendingChdir
+	attached     bool
 }
 
 func NewTracer(v vfs.VFS, mountpoint string) *Tracer {
@@ -118,7 +124,10 @@ func (t *Tracer) traceLoop(initialPid int) error {
 
 		proc, ok := t.procs[pid]
 		if !ok {
-			cwd, _ := os.Getwd()
+			cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+			if err != nil {
+				cwd, _ = os.Getwd()
+			}
 			proc = &ProcessState{
 				pid:     pid,
 				cwd:     cwd,

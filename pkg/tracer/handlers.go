@@ -22,6 +22,8 @@ const (
 	SYS_STAT       = 4
 	SYS_FSTAT      = 5
 	SYS_LSTAT      = 6
+	SYS_CHDIR      = 80
+	SYS_FCHDIR     = 81
 	SYS_DUP        = 32
 	SYS_DUP2       = 33
 	SYS_RMDIR      = 84
@@ -106,6 +108,10 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleDupEntry()
 	case SYS_DUP2, SYS_DUP3:
 		h.handleDup2Entry()
+	case SYS_CHDIR:
+		h.handleChdirEntry()
+	case SYS_FCHDIR:
+		h.handleFchdirEntry()
 	}
 }
 
@@ -119,6 +125,10 @@ func (h *SyscallHandler) HandleExit() {
 		h.handleDupExit()
 	case SYS_DUP2, SYS_DUP3:
 		h.handleDup2Exit()
+	case SYS_CHDIR:
+		h.handleChdirExit()
+	case SYS_FCHDIR:
+		h.handleFchdirExit()
 	}
 }
 
@@ -669,6 +679,58 @@ func (h *SyscallHandler) handleDup2Exit() {
 	h.tracer.fdTable.Dup(pending.oldfd, pending.newfd)
 	if path, ok := h.proc.fdPaths[pending.oldfd]; ok {
 		h.proc.fdPaths[pending.newfd] = path
+	}
+}
+
+func (h *SyscallHandler) handleChdirEntry() {
+	pathAddr := uintptr(h.regs.Rdi)
+	path, err := ReadString(h.proc.pid, pathAddr, 4096)
+	if err != nil {
+		return
+	}
+
+	resolved := h.tracer.resolver.ResolvePath(h.proc.cwd, path)
+	h.proc.pendingChdir = &pendingChdir{path: resolved}
+}
+
+func (h *SyscallHandler) handleChdirExit() {
+	if h.proc.pendingChdir == nil {
+		return
+	}
+
+	pending := h.proc.pendingChdir
+	h.proc.pendingChdir = nil
+
+	result := int(int64(h.regs.Rax))
+	if result != 0 {
+		return
+	}
+
+	h.proc.cwd = pending.path
+	debugf("chdir: cwd now %q", h.proc.cwd)
+}
+
+func (h *SyscallHandler) handleFchdirEntry() {
+	fd := int(h.regs.Rdi)
+	h.proc.pendingChdir = &pendingChdir{fd: fd}
+}
+
+func (h *SyscallHandler) handleFchdirExit() {
+	if h.proc.pendingChdir == nil {
+		return
+	}
+
+	pending := h.proc.pendingChdir
+	h.proc.pendingChdir = nil
+
+	result := int(int64(h.regs.Rax))
+	if result != 0 {
+		return
+	}
+
+	if path, ok := h.proc.fdPaths[pending.fd]; ok {
+		h.proc.cwd = path
+		debugf("fchdir: cwd now %q", h.proc.cwd)
 	}
 }
 
