@@ -45,6 +45,7 @@ type ProcessState struct {
 	fdPaths     map[int]string
 	pendingOpen *pendingOpen
 	pendingDup  *pendingDup
+	attached    bool
 }
 
 func NewTracer(v vfs.VFS, mountpoint string) *Tracer {
@@ -86,9 +87,10 @@ func (t *Tracer) Run(args []string) error {
 
 	cwd, _ := os.Getwd()
 	t.procs[pid] = &ProcessState{
-		pid:     pid,
-		cwd:     cwd,
-		fdPaths: make(map[int]string),
+		pid:      pid,
+		cwd:      cwd,
+		fdPaths:  make(map[int]string),
+		attached: true,
 	}
 
 	return t.traceLoop(pid)
@@ -135,6 +137,13 @@ func (t *Tracer) traceLoop(initialPid int) error {
 				t.handleSyscall(proc)
 				syscall.PtraceSyscall(pid, 0)
 			} else if sig == syscall.SIGTRAP {
+				syscall.PtraceSyscall(pid, 0)
+			} else if sig == syscall.SIGSTOP && !proc.attached {
+				proc.attached = true
+				syscall.PtraceSyscall(pid, 0)
+			} else if sig == syscall.SIGTTIN || sig == syscall.SIGTTOU || sig == syscall.SIGTSTP {
+				// Suppress terminal job control signals to allow interactive shells to work.
+				// Limitation: these signals cannot be manually delivered to traced processes.
 				syscall.PtraceSyscall(pid, 0)
 			} else {
 				syscall.PtraceSyscall(pid, int(sig))
