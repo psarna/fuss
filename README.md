@@ -13,13 +13,13 @@ fuss intercepts filesystem syscalls from a child process and redirects them thro
 ## Installation
 
 ```bash
-go install github.com/youruser/fuss/cmd/fuss@latest
+go install github.com/psarna/fuss/cmd/fuss@latest
 ```
 
 or build from source like a pro:
 
 ```bash
-git clone https://github.com/youruser/fuss
+git clone https://github.com/psarna/fuss
 cd fuss
 go build -o fuss ./cmd/fuss
 ```

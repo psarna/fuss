@@ -1,46 +1,51 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"fuss/pkg/overlay"
 	"fuss/pkg/tracer"
+
+	"github.com/spf13/cobra"
+)
+
+var (
+	mountpoint    string
+	lowerdir      string
+	upperdir      string
+	whiteoutStyle string
 )
 
 func main() {
-	var (
-		mountpoint    string
-		lowerdir      string
-		upperdir      string
-		whiteoutStyle string
-	)
+	rootCmd := &cobra.Command{
+		Use:   "fuss [flags] -- command [args...]",
+		Short: "Filesystem in Userspace with Syscall interception",
+		Long: `fuss intercepts filesystem syscalls using ptrace to provide an overlay
+filesystem without requiring root privileges or kernel modules.
 
-	flag.StringVar(&mountpoint, "mountpoint", "", "Virtual mount point (required)")
-	flag.StringVar(&lowerdir, "lowerdir", "", "Read-only lower layers, colon-separated (rightmost = bottom)")
-	flag.StringVar(&upperdir, "upperdir", "", "Writable upper layer directory")
-	flag.StringVar(&whiteoutStyle, "whiteout", "fileprefix", "Whiteout style: chardev or fileprefix")
-	flag.Parse()
-
-	args := flag.Args()
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: fuss [options] -- command [args...]")
-		flag.PrintDefaults()
-		os.Exit(1)
+Example:
+  fuss --mountpoint /app --upperdir /tmp/changes --lowerdir /layers/base -- ls -la /app`,
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: false,
+		RunE:               run,
 	}
 
-	if mountpoint == "" {
-		fmt.Fprintln(os.Stderr, "Error: --mountpoint is required")
+	rootCmd.Flags().StringVar(&mountpoint, "mountpoint", "", "Virtual mount point (required)")
+	rootCmd.Flags().StringVar(&lowerdir, "lowerdir", "", "Read-only lower layers, colon-separated (rightmost = bottom)")
+	rootCmd.Flags().StringVar(&upperdir, "upperdir", "", "Writable upper layer directory (required)")
+	rootCmd.Flags().StringVar(&whiteoutStyle, "whiteout", "fileprefix", "Whiteout style: chardev or fileprefix")
+
+	rootCmd.MarkFlagRequired("mountpoint")
+	rootCmd.MarkFlagRequired("upperdir")
+
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
 
-	if upperdir == "" {
-		fmt.Fprintln(os.Stderr, "Error: --upperdir is required")
-		os.Exit(1)
-	}
-
+func run(cmd *cobra.Command, args []string) error {
 	var lowerDirs []string
 	if lowerdir != "" {
 		lowerDirs = strings.Split(lowerdir, ":")
@@ -48,14 +53,12 @@ func main() {
 
 	for _, dir := range lowerDirs {
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-			fmt.Fprintf(os.Stderr, "Error: lower directory does not exist: %s\n", dir)
-			os.Exit(1)
+			return fmt.Errorf("lower directory does not exist: %s", dir)
 		}
 	}
 
 	if info, err := os.Stat(upperdir); err != nil || !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "Error: upper directory does not exist: %s\n", upperdir)
-		os.Exit(1)
+		return fmt.Errorf("upper directory does not exist: %s", upperdir)
 	}
 
 	var style overlay.WhiteoutStyle
@@ -65,8 +68,7 @@ func main() {
 	case "fileprefix":
 		style = overlay.WhiteoutFilePrefix
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unknown whiteout style: %s\n", whiteoutStyle)
-		os.Exit(1)
+		return fmt.Errorf("unknown whiteout style: %s", whiteoutStyle)
 	}
 
 	vfs := overlay.New(overlay.Config{
@@ -77,8 +79,5 @@ func main() {
 
 	t := tracer.NewTracer(vfs, mountpoint)
 
-	if err := t.Run(args); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	return t.Run(args)
 }
