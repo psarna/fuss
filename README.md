@@ -38,6 +38,8 @@ Options:
 
 ### Examples
 
+![fuss bash](demo/bash.gif)
+
 Basic overlay with one lower layer:
 
 ```bash
