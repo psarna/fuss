@@ -30,6 +30,7 @@ const (
 	SYS_DUP2       = 33
 	SYS_RMDIR      = 84
 	SYS_UNLINK     = 87
+	SYS_READLINK   = 89
 	SYS_GETDENTS64 = 217
 	SYS_OPENAT     = 257
 	SYS_MKDIRAT    = 258
@@ -103,6 +104,8 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleLinkatEntry()
 	case SYS_SYMLINKAT:
 		h.handleSymlinkatEntry()
+	case SYS_READLINK:
+		h.handleReadlinkEntry()
 	case SYS_READLINKAT:
 		h.handleReadlinkatEntry()
 	case SYS_FCHMODAT:
@@ -696,6 +699,28 @@ func (h *SyscallHandler) handleReadlinkatEntry() {
 	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
+func (h *SyscallHandler) handleReadlinkEntry() {
+	pathAddr := uintptr(h.regs.Rdi)
+
+	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
+	if !intercept {
+		return
+	}
+
+	realPath, err := h.tracer.vfs.ResolvePath(vfsPath)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rdi = uint64(newAddr)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
