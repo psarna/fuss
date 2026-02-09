@@ -13,20 +13,38 @@ func ReadString(pid int, addr uintptr, maxLen int) (string, error) {
 	if addr == 0 {
 		return "", nil
 	}
-	buf := make([]byte, 64)
-	n, err := ReadBytes(pid, addr, buf)
-	if debugMem {
-		fmt.Fprintf(os.Stderr, "[FUSS] ReadString: pid=%d addr=%x n=%d err=%v first16=%x\n", pid, addr, n, err, buf[:min(16, max(n, 1))])
+	if maxLen <= 0 {
+		maxLen = 256
 	}
-	if err != nil {
-		return "", err
+	if maxLen > 4096 {
+		maxLen = 4096
 	}
-	for i := 0; i < n; i++ {
-		if buf[i] == 0 {
-			return string(buf[:i]), nil
+	var result []byte
+	chunkSize := 256
+	for len(result) < maxLen {
+		toRead := chunkSize
+		if len(result)+toRead > maxLen {
+			toRead = maxLen - len(result)
+		}
+		buf := make([]byte, toRead)
+		n, err := ReadBytes(pid, addr+uintptr(len(result)), buf)
+		if debugMem {
+			fmt.Fprintf(os.Stderr, "[FUSS] ReadString: pid=%d addr=%x n=%d err=%v\n", pid, addr+uintptr(len(result)), n, err)
+		}
+		if err != nil && len(result) == 0 {
+			return "", err
+		}
+		for i := 0; i < n; i++ {
+			if buf[i] == 0 {
+				return string(append(result, buf[:i]...)), nil
+			}
+		}
+		result = append(result, buf[:n]...)
+		if n < toRead {
+			break
 		}
 	}
-	return string(buf[:n]), nil
+	return string(result), nil
 }
 
 func ReadBytes(pid int, addr uintptr, buf []byte) (int, error) {

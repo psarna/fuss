@@ -18,10 +18,12 @@ func debugf(format string, args ...interface{}) {
 }
 
 const (
+	SYS_OPEN       = 2
 	SYS_CLOSE      = 3
 	SYS_STAT       = 4
 	SYS_FSTAT      = 5
 	SYS_LSTAT      = 6
+	SYS_EXECVE     = 59
 	SYS_CHDIR      = 80
 	SYS_FCHDIR     = 81
 	SYS_DUP        = 32
@@ -41,6 +43,7 @@ const (
 	SYS_FCHMODAT   = 268
 	SYS_DUP3       = 292
 	SYS_RENAMEAT2  = 316
+	SYS_EXECVEAT   = 322
 	SYS_STATX      = 332
 	SYS_FACCESSAT2 = 439
 
@@ -68,8 +71,14 @@ func (h *SyscallHandler) HandleEntry() {
 	debugf("syscall entry: %d rdi=%x rsi=%x rdx=%x r10=%x", sysno, h.regs.Rdi, h.regs.Rsi, h.regs.Rdx, h.regs.R10)
 
 	switch sysno {
+	case SYS_OPEN:
+		h.handleOpenEntry()
 	case SYS_OPENAT:
 		h.handleOpenatEntry()
+	case SYS_EXECVE:
+		h.handleExecveEntry()
+	case SYS_EXECVEAT:
+		h.handleExecveatEntry()
 	case SYS_CLOSE:
 		h.handleCloseEntry()
 	case SYS_STAT:
@@ -119,6 +128,8 @@ func (h *SyscallHandler) HandleExit() {
 	sysno := h.regs.Orig_rax
 
 	switch sysno {
+	case SYS_OPEN:
+		h.handleOpenatExit()
 	case SYS_OPENAT:
 		h.handleOpenatExit()
 	case SYS_DUP:
@@ -141,6 +152,11 @@ func (h *SyscallHandler) skipSyscall(result int64) {
 func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) {
 	path, err := ReadString(h.proc.pid, pathAddr, 4096)
 	if err != nil {
+		debugf("readPathAt: ReadString failed: pid=%d addr=%x err=%v", h.proc.pid, pathAddr, err)
+		return "", false
+	}
+	if path == "" {
+		debugf("readPathAt: empty path (pid=%d addr=%x)", h.proc.pid, pathAddr)
 		return "", false
 	}
 
@@ -154,10 +170,13 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 	return h.tracer.resolver.TranslatePath(resolved), true
 }
 
-func (h *SyscallHandler) rewritePath(pathAddr uintptr, newPath string) uintptr {
+func (h *SyscallHandler) rewritePath(pathAddr uintptr, newPath string) (uintptr, error) {
 	stackAddr := uintptr(h.regs.Rsp) - 4096
-	WriteString(h.proc.pid, stackAddr, newPath)
-	return stackAddr
+	if err := WriteString(h.proc.pid, stackAddr, newPath); err != nil {
+		debugf("rewritePath: WriteString failed: %v (addr=%x path=%q)", err, stackAddr, newPath)
+		return 0, err
+	}
+	return stackAddr, nil
 }
 
 func (h *SyscallHandler) handleOpenatEntry() {
@@ -187,7 +206,11 @@ func (h *SyscallHandler) handleOpenatEntry() {
 	debugf("openat: resolved to real path %q", realPath)
 
 	h.origPath = pathAddr
-	h.newPath = h.rewritePath(pathAddr, realPath)
+	newPath, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.newPath = newPath
 	h.regs.Rsi = uint64(h.newPath)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 
@@ -198,6 +221,51 @@ func (h *SyscallHandler) handleOpenatEntry() {
 	h.proc.pendingOpen = &pendingOpen{
 		path:  resolved,
 		isDir: h.isDir,
+		vfsPath: vfsPath,
+	}
+}
+
+func (h *SyscallHandler) handleOpenEntry() {
+	pathAddr := uintptr(h.regs.Rdi)
+	flags := int(h.regs.Rsi)
+	mode := uint32(h.regs.Rdx)
+
+	rawPath, _ := ReadString(h.proc.pid, pathAddr, 4096)
+	debugf("open: path=%q flags=0x%x mode=0%o", rawPath, flags, mode)
+
+	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
+	if !intercept {
+		debugf("open: not intercepting %q", rawPath)
+		return
+	}
+
+	debugf("open: intercepting %q -> vfs %q", rawPath, vfsPath)
+
+	realPath, err := h.tracer.vfs.ResolveForOpen(vfsPath, vfs.OpenFlags(flags), mode)
+	if err != nil {
+		debugf("open: ResolveForOpen failed: %v", err)
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	debugf("open: resolved to real path %q", realPath)
+
+	h.origPath = pathAddr
+	newPath, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.newPath = newPath
+	h.regs.Rdi = uint64(h.newPath)
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+
+	h.isDir = flags&O_DIRECTORY != 0
+	h.vfsPath = vfsPath
+
+	resolved := h.tracer.resolver.ResolveAt(AT_FDCWD, rawPath, h.proc.cwd, h.proc.fdPaths)
+	h.proc.pendingOpen = &pendingOpen{
+		path:    resolved,
+		isDir:   h.isDir,
 		vfsPath: vfsPath,
 	}
 }
@@ -247,7 +315,10 @@ func (h *SyscallHandler) handleStatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rdi = uint64(newAddr)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
@@ -266,7 +337,10 @@ func (h *SyscallHandler) handleLstatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rdi = uint64(newAddr)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
@@ -288,7 +362,10 @@ func (h *SyscallHandler) handleNewfstatatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -364,7 +441,10 @@ func (h *SyscallHandler) handleMkdiratEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -453,9 +533,14 @@ func (h *SyscallHandler) handleRenameatEntry() {
 		return
 	}
 
-	oldAddr := h.rewritePath(oldPathAddr, oldReal)
+	oldAddr, err := h.rewritePath(oldPathAddr, oldReal)
+	if err != nil {
+		return
+	}
 	newAddr := uintptr(h.regs.Rsp) - 8192
-	WriteString(h.proc.pid, newAddr, newReal)
+	if err := WriteString(h.proc.pid, newAddr, newReal); err != nil {
+		return
+	}
 
 	h.regs.Rdi = AT_FDCWD_U64
 	h.regs.Rsi = uint64(oldAddr)
@@ -488,9 +573,14 @@ func (h *SyscallHandler) handleLinkatEntry() {
 		return
 	}
 
-	oldAddr := h.rewritePath(oldPathAddr, oldReal)
+	oldAddr, err := h.rewritePath(oldPathAddr, oldReal)
+	if err != nil {
+		return
+	}
 	newAddr := uintptr(h.regs.Rsp) - 8192
-	WriteString(h.proc.pid, newAddr, newReal)
+	if err := WriteString(h.proc.pid, newAddr, newReal); err != nil {
+		return
+	}
 
 	h.regs.Rdi = AT_FDCWD_U64
 	h.regs.Rsi = uint64(oldAddr)
@@ -515,11 +605,74 @@ func (h *SyscallHandler) handleSymlinkatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(linkpathAddr, realPath)
+	newAddr, err := h.rewritePath(linkpathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = AT_FDCWD_U64
 	h.regs.Rdx = uint64(newAddr)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 	_ = targetAddr
+}
+
+func (h *SyscallHandler) handleExecveEntry() {
+	pathAddr := uintptr(h.regs.Rdi)
+
+	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
+	if !intercept {
+		rawPath, err := ReadString(h.proc.pid, pathAddr, 4096)
+		if err != nil {
+			debugf("execve: ReadString failed: pid=%d addr=%x err=%v", h.proc.pid, pathAddr, err)
+		} else {
+			debugf("execve: not intercepting path %q", rawPath)
+		}
+		return
+	}
+
+	debugf("execve: intercepting vfs path %q", vfsPath)
+
+	realPath, err := h.tracer.vfs.ResolvePath(vfsPath)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	debugf("execve: resolved to real path %q", realPath)
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rdi = uint64(newAddr)
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
+func (h *SyscallHandler) handleExecveatEntry() {
+	dirfd := int(int32(h.regs.Rdi))
+	pathAddr := uintptr(h.regs.Rsi)
+
+	vfsPath, intercept := h.readPathAt(dirfd, pathAddr)
+	if !intercept {
+		return
+	}
+
+	debugf("execveat: intercepting vfs path %q", vfsPath)
+
+	realPath, err := h.tracer.vfs.ResolvePath(vfsPath)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	debugf("execveat: resolved to real path %q", realPath)
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rsi = uint64(newAddr)
+	h.regs.Rdi = AT_FDCWD_U64
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
 func (h *SyscallHandler) handleReadlinkatEntry() {
@@ -537,7 +690,10 @@ func (h *SyscallHandler) handleReadlinkatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -558,7 +714,10 @@ func (h *SyscallHandler) handleFchmodatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -579,7 +738,10 @@ func (h *SyscallHandler) handleFchownatEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -600,7 +762,10 @@ func (h *SyscallHandler) handleFaccessat2Entry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
@@ -623,7 +788,10 @@ func (h *SyscallHandler) handleStatxEntry() {
 		return
 	}
 
-	newAddr := h.rewritePath(pathAddr, realPath)
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
