@@ -2,20 +2,10 @@ package tracer
 
 import (
 	"encoding/binary"
-	"fmt"
-	"os"
 	"syscall"
 
 	"fuss/pkg/vfs"
 )
-
-var debug = os.Getenv("FUSS_DEBUG") != ""
-
-func debugf(format string, args ...interface{}) {
-	if debug {
-		fmt.Fprintf(os.Stderr, "[FUSS] "+format+"\n", args...)
-	}
-}
 
 const (
 	SYS_OPEN       = 2
@@ -170,7 +160,9 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 		return "", false
 	}
 
-	return h.tracer.resolver.TranslatePath(resolved), true
+	vfsPath := h.tracer.resolver.TranslatePath(resolved)
+	logIntercept(h.regs.Orig_rax, path, resolved, vfsPath)
+	return vfsPath, true
 }
 
 func (h *SyscallHandler) rewritePath(pathAddr uintptr, newPath string) (uintptr, error) {

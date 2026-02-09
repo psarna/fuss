@@ -36,6 +36,10 @@ Options:
 - `--upperdir PATH` - Writable upper layer directory
 - `--whiteout MODE` - Whiteout style: "chardev" or "fileprefix" (default: fileprefix)
 
+Debug logging:
+- `FUSS_LOG_LEVEL=intercept` - log only intercepted syscalls (human-readable names)
+- `FUSS_LOG_LEVEL=debug` - verbose syscall tracing (same as `FUSS_DEBUG=1`)
+
 ### Examples
 
 ![fuss bash](demo/bash.gif)
@@ -65,6 +69,18 @@ fuss --mountpoint=/home/user/project \
      --lowerdir=/home/user/project \
      --upperdir=/tmp/build-output \
      -- make all
+```
+
+Intercept-only logging (shows just intercepted syscalls):
+
+```bash
+sarna@sarna-work:~/repo/fuss$ FUSS_LOG_LEVEL=intercept ./fuss --mountpoint=/mnt  --lowerdir=/tmp/rust-1.93-slim-bullseye/layers/2-71d08cce6d45/rootfs:/tmp/rust-1.93-slim-bullseye/layers/1-1c3e0f92551c/rootfs   --upperdir=/tmp/upper --  /bin/bash
+sarna@sarna-work:~/repo/fuss$ ls -lash /mnt/var/lock
+time=2026-02-09T18:22:50.417+01:00 level=INFO msg=intercept syscall=statx path=/mnt/var/lock resolved=/mnt/var/lock vfs=/var/lock
+ls: /mnt/var/lock
+time=2026-02-09T18:22:50.417+01:00 level=INFO msg=intercept syscall=readlink path=/mnt/var/lock resolved=/mnt/var/lock vfs=/var/lock
+time=2026-02-09T18:22:50.417+01:00 level=INFO msg=intercept syscall=statx path=/mnt/var/lock resolved=/mnt/var/lock vfs=/var/lock
+0 lrwxrwxrwx 1 sarna sarna 9 lut  2 01:00 /mnt/var/lock -> /run/lock
 ```
 
 ## How It Works

@@ -1,13 +1,9 @@
 package tracer
 
 import (
-	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
 )
-
-var debugMem = os.Getenv("FUSS_DEBUG") != ""
 
 func ReadString(pid int, addr uintptr, maxLen int) (string, error) {
 	if addr == 0 {
@@ -28,9 +24,7 @@ func ReadString(pid int, addr uintptr, maxLen int) (string, error) {
 		}
 		buf := make([]byte, toRead)
 		n, err := ReadBytes(pid, addr+uintptr(len(result)), buf)
-		if debugMem {
-			fmt.Fprintf(os.Stderr, "[FUSS] ReadString: pid=%d addr=%x n=%d err=%v\n", pid, addr+uintptr(len(result)), n, err)
-		}
+		debugf("ReadString: pid=%d addr=%x n=%d err=%v", pid, addr+uintptr(len(result)), n, err)
 		if err != nil && len(result) == 0 {
 			return "", err
 		}
