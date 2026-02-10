@@ -44,6 +44,13 @@ func debugf(format string, args ...interface{}) {
 	logger.Debug(fmt.Sprintf(format, args...))
 }
 
+func logChdir(sysno uint64, newCwd string) {
+	if level < logInterceptOnly {
+		return
+	}
+	logger.Info("chdir", "syscall", syscallName(sysno), "cwd", newCwd)
+}
+
 func logIntercept(sysno uint64, path string, resolved string, vfsPath string) {
 	if level < logInterceptOnly {
 		return

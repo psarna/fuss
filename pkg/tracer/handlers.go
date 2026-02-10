@@ -983,6 +983,7 @@ func (h *SyscallHandler) handleChdirExit() {
 	}
 
 	h.proc.cwd = pending.path
+	logChdir(SYS_CHDIR, h.proc.cwd)
 	debugf("chdir: cwd now %q", h.proc.cwd)
 }
 
@@ -1006,6 +1007,7 @@ func (h *SyscallHandler) handleFchdirExit() {
 
 	if path, ok := h.proc.fdPaths[pending.fd]; ok {
 		h.proc.cwd = path
+		logChdir(SYS_FCHDIR, h.proc.cwd)
 		debugf("fchdir: cwd now %q", h.proc.cwd)
 	}
 }
