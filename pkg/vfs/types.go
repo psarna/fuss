@@ -23,21 +23,22 @@ type FileInfo struct {
 }
 
 func (fi *FileInfo) ToStat() syscall.Stat_t {
-	return syscall.Stat_t{
-		Dev:     0,
-		Ino:     fi.Ino,
-		Nlink:   fi.Nlink,
-		Mode:    fi.Mode,
-		Uid:     fi.Uid,
-		Gid:     fi.Gid,
-		Rdev:    fi.Rdev,
-		Size:    fi.Size,
-		Blksize: fi.Blksize,
-		Blocks:  fi.Blocks,
-		Atim:    syscall.Timespec{Sec: fi.Atime.Unix(), Nsec: int64(fi.Atime.Nanosecond())},
-		Mtim:    syscall.Timespec{Sec: fi.ModTime.Unix(), Nsec: int64(fi.ModTime.Nanosecond())},
-		Ctim:    syscall.Timespec{Sec: fi.Ctime.Unix(), Nsec: int64(fi.Ctime.Nanosecond())},
+	st := syscall.Stat_t{
+		Dev:   0,
+		Ino:   fi.Ino,
+		Mode:  fi.Mode,
+		Uid:   fi.Uid,
+		Gid:   fi.Gid,
+		Rdev:  fi.Rdev,
+		Size:  fi.Size,
+		Blocks: fi.Blocks,
+		Atim:  syscall.Timespec{Sec: fi.Atime.Unix(), Nsec: int64(fi.Atime.Nanosecond())},
+		Mtim:  syscall.Timespec{Sec: fi.ModTime.Unix(), Nsec: int64(fi.ModTime.Nanosecond())},
+		Ctim:  syscall.Timespec{Sec: fi.Ctime.Unix(), Nsec: int64(fi.Ctime.Nanosecond())},
 	}
+	statSetNlink(&st, fi.Nlink)
+	statSetBlksize(&st, fi.Blksize)
+	return st
 }
 
 func FileInfoFromStat(name string, st *syscall.Stat_t) *FileInfo {
@@ -47,12 +48,12 @@ func FileInfoFromStat(name string, st *syscall.Stat_t) *FileInfo {
 		Mode:    st.Mode,
 		ModTime: time.Unix(st.Mtim.Sec, st.Mtim.Nsec),
 		IsDir:   st.Mode&syscall.S_IFDIR != 0,
-		Nlink:   st.Nlink,
+		Nlink:   uint64(st.Nlink),
 		Uid:     st.Uid,
 		Gid:     st.Gid,
 		Rdev:    st.Rdev,
 		Ino:     st.Ino,
-		Blksize: st.Blksize,
+		Blksize: int64(st.Blksize),
 		Blocks:  st.Blocks,
 		Atime:   time.Unix(st.Atim.Sec, st.Atim.Nsec),
 		Ctime:   time.Unix(st.Ctim.Sec, st.Ctim.Nsec),
