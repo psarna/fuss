@@ -99,6 +99,14 @@ func syscallName(sysno uint64) string {
 		return "fchownat"
 	case SYS_FACCESSAT2:
 		return "faccessat2"
+	case SYS_GETXATTR:
+		return "getxattr"
+	case SYS_LGETXATTR:
+		return "lgetxattr"
+	case SYS_LISTXATTR:
+		return "listxattr"
+	case SYS_LLISTXATTR:
+		return "llistxattr"
 	case SYS_STATX:
 		return "statx"
 	case SYS_DUP:

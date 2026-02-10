@@ -36,6 +36,10 @@ const (
 	SYS_RENAMEAT2  = 316
 	SYS_EXECVEAT   = 322
 	SYS_STATX      = 332
+	SYS_GETXATTR   = 191
+	SYS_LGETXATTR  = 192
+	SYS_LISTXATTR  = 194
+	SYS_LLISTXATTR = 195
 	SYS_FACCESSAT2 = 439
 
 	AT_FDCWD            = -100
@@ -104,6 +108,14 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleFchownatEntry()
 	case SYS_FACCESSAT2:
 		h.handleFaccessat2Entry()
+	case SYS_GETXATTR:
+		h.handleXattrPathEntry(true)
+	case SYS_LGETXATTR:
+		h.handleXattrPathEntry(false)
+	case SYS_LISTXATTR:
+		h.handleXattrPathEntry(true)
+	case SYS_LLISTXATTR:
+		h.handleXattrPathEntry(false)
 	case SYS_STATX:
 		h.handleStatxEntry()
 	case SYS_DUP:
@@ -811,6 +823,28 @@ func (h *SyscallHandler) handleStatxEntry() {
 	}
 	h.regs.Rsi = uint64(newAddr)
 	h.regs.Rdi = AT_FDCWD_U64
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
+func (h *SyscallHandler) handleXattrPathEntry(followSymlinks bool) {
+	pathAddr := uintptr(h.regs.Rdi)
+
+	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
+	if !intercept {
+		return
+	}
+
+	realPath, err := h.tracer.vfs.ResolveForStat(vfsPath, followSymlinks)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rdi = uint64(newAddr)
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
