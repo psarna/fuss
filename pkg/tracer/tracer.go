@@ -52,6 +52,7 @@ type ProcessState struct {
 	pendingDup   *pendingDup
 	pendingChdir *pendingChdir
 	attached     bool
+	skipResult   *int64
 }
 
 func NewTracer(v vfs.VFS, mountpoint string) *Tracer {

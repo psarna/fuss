@@ -18,6 +18,7 @@ const (
 	SYS_FCHDIR     = 81
 	SYS_DUP        = 32
 	SYS_DUP2       = 33
+	SYS_GETPID     = 39
 	SYS_RMDIR      = 84
 	SYS_UNLINK     = 87
 	SYS_READLINK   = 89
@@ -53,13 +54,13 @@ const (
 const AT_FDCWD_U64 = 0xffffffffffffff9c
 
 type SyscallHandler struct {
-	tracer    *Tracer
-	proc      *ProcessState
-	regs      *syscall.PtraceRegs
-	origPath  uintptr
-	newPath   uintptr
-	isDir     bool
-	vfsPath   string
+	tracer   *Tracer
+	proc     *ProcessState
+	regs     *syscall.PtraceRegs
+	origPath uintptr
+	newPath  uintptr
+	isDir    bool
+	vfsPath  string
 }
 
 func (h *SyscallHandler) HandleEntry() {
@@ -133,6 +134,14 @@ func (h *SyscallHandler) HandleEntry() {
 }
 
 func (h *SyscallHandler) HandleExit() {
+	if h.proc.skipResult != nil {
+		result := *h.proc.skipResult
+		h.proc.skipResult = nil
+		h.regs.Rax = uint64(result)
+		syscall.PtraceSetRegs(h.proc.pid, h.regs)
+		return
+	}
+
 	sysno := h.regs.Orig_rax
 
 	switch sysno {
@@ -152,8 +161,8 @@ func (h *SyscallHandler) HandleExit() {
 }
 
 func (h *SyscallHandler) skipSyscall(result int64) {
-	h.regs.Orig_rax = ^uint64(0)
-	h.regs.Rax = uint64(result)
+	h.regs.Orig_rax = SYS_GETPID
+	h.proc.skipResult = &result
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
@@ -229,8 +238,8 @@ func (h *SyscallHandler) handleOpenatEntry() {
 
 	resolved := h.tracer.resolver.ResolveAt(dirfd, rawPath, h.proc.cwd, h.proc.fdPaths)
 	h.proc.pendingOpen = &pendingOpen{
-		path:  resolved,
-		isDir: h.isDir,
+		path:    resolved,
+		isDir:   h.isDir,
 		vfsPath: vfsPath,
 	}
 }
@@ -395,12 +404,16 @@ func (h *SyscallHandler) handleGetdents64Entry() {
 
 	entries, err := h.tracer.vfs.ReadDir(vfsPath)
 	if err != nil {
+		debugf("getdents64: ReadDir(%q) error: %v (errno=%d)", vfsPath, err, errnoFromError(err))
 		h.skipSyscall(errnoFromError(err))
 		return
 	}
 
+	debugf("getdents64: ReadDir(%q) returned %d entries, bufsize=%d", vfsPath, len(entries), count)
+
 	pos := h.tracer.fdTable.GetDirPos(fd)
 	if pos >= len(entries) {
+		debugf("getdents64: pos=%d >= len=%d, returning 0", pos, len(entries))
 		h.skipSyscall(0)
 		return
 	}
@@ -433,6 +446,7 @@ func (h *SyscallHandler) handleGetdents64Entry() {
 	}
 
 	h.tracer.fdTable.SetDirPos(fd, pos+entriesRead)
+	debugf("getdents64: wrote %d entries, %d bytes", entriesRead, offset)
 	h.skipSyscall(int64(offset))
 }
 
