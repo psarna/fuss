@@ -40,6 +40,7 @@ const (
 	SYS_LGETXATTR  = 192
 	SYS_LISTXATTR  = 194
 	SYS_LLISTXATTR = 195
+	SYS_STATFS     = 137
 	SYS_FACCESSAT2 = 439
 
 	AT_FDCWD            = -100
@@ -116,6 +117,8 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleXattrPathEntry(true)
 	case SYS_LLISTXATTR:
 		h.handleXattrPathEntry(false)
+	case SYS_STATFS:
+		h.handleStatfsEntry()
 	case SYS_STATX:
 		h.handleStatxEntry()
 	case SYS_DUP:
@@ -800,6 +803,28 @@ func (h *SyscallHandler) handleFaccessat2Entry() {
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
+func (h *SyscallHandler) handleStatfsEntry() {
+	pathAddr := uintptr(h.regs.Rdi)
+
+	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
+	if !intercept {
+		return
+	}
+
+	realPath, err := h.tracer.vfs.ResolveForStat(vfsPath, true)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rdi = uint64(newAddr)
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
 func (h *SyscallHandler) handleStatxEntry() {
 	dirfd := int(int32(h.regs.Rdi))
 	pathAddr := uintptr(h.regs.Rsi)
@@ -910,6 +935,24 @@ func (h *SyscallHandler) handleChdirEntry() {
 
 	resolved := h.tracer.resolver.ResolvePath(h.proc.cwd, path)
 	h.proc.pendingChdir = &pendingChdir{path: resolved}
+
+	if !h.tracer.resolver.ShouldIntercept(resolved) {
+		return
+	}
+
+	vfsPath := h.tracer.resolver.TranslatePath(resolved)
+	realPath, err := h.tracer.vfs.ResolveForStat(vfsPath, true)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	h.regs.Rdi = uint64(newAddr)
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
 func (h *SyscallHandler) handleChdirExit() {

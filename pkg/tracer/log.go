@@ -107,6 +107,8 @@ func syscallName(sysno uint64) string {
 		return "listxattr"
 	case SYS_LLISTXATTR:
 		return "llistxattr"
+	case SYS_STATFS:
+		return "statfs"
 	case SYS_STATX:
 		return "statx"
 	case SYS_DUP:

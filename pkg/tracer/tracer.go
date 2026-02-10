@@ -146,6 +146,21 @@ func (t *Tracer) traceLoop(initialPid int) error {
 				t.handleSyscall(proc)
 				syscall.PtraceSyscall(pid, 0)
 			} else if sig == syscall.SIGTRAP {
+				event := int(ws>>16) & 0xff
+				if event == 1 || event == 2 || event == 3 {
+					childPid, err := syscall.PtraceGetEventMsg(pid)
+					if err == nil {
+						fdCopy := make(map[int]string, len(proc.fdPaths))
+						for k, v := range proc.fdPaths {
+							fdCopy[k] = v
+						}
+						t.procs[int(childPid)] = &ProcessState{
+							pid:     int(childPid),
+							cwd:     proc.cwd,
+							fdPaths: fdCopy,
+						}
+					}
+				}
 				syscall.PtraceSyscall(pid, 0)
 			} else if sig == syscall.SIGSTOP && !proc.attached {
 				proc.attached = true
