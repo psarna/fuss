@@ -2,13 +2,26 @@
 
 # fuss
 
-**F**ilesystem with **U**nions, **S**andbox-**S**tyle
+**F**ilesystem **U**tility for **S**andboxes and **S**tuff
+
+**F**orwarding **U**serspace **S**yscalls **S**ilently
+
+**F**USE **u**nnecessary - **s**yscalls **s**ufficient
+
+**F**ile **U**nion **S**ans **S**etuid
 
 Look ma, no FUSE! A userspace overlay filesystem implementation using ptrace-based syscall interception. No FUSE, no kernel modules, no mount permissions required.
 
 ## What is this?
 
-fuss intercepts filesystem syscalls from a child process and redirects them through a virtual filesystem layer. The included overlay implementation provides copy-on-write semantics compatible with Linux overlayfs/fuse-overlayfs.
+fuss wraps your program and intercepts filesystem syscalls, redirecting them through a virtual filesystem layer compatible with overlayfs/fuse-overlayfs.
+Syscalls that don't use paths are just passed through transparently.
+
+## Compatibility
+
+fuss stores layers, whiteout markers and opaque directory markers exactly as fuse-overlayfs and overlayfs would. This means you can use fuss and then
+decide you're a huge fan of mounting filesystems after all. It will still "just work™," with your data intact and available.
+In fact, fuss was extensively tested by "chrooting" into overlay layers from real-life Docker images just to prove that it can.
 
 ## Installation
 
@@ -120,9 +133,12 @@ The `pkg/passthrough` package provides a simple reference implementation of the 
 
 ## Limitations
 
-- Linux x86\_64 only (ptrace is architecture-specific)
+- Linux x86\_64 and arm64 only (ptrace is architecture-specific)
 - Some syscall edge cases may not be fully handled
-- Performance overhead from ptrace context switches
+- Performance penalty expected from ptrace
+- Applications that trace themselves (e.g. gdb, strace)
+  will not work out-of-the-box due to one process
+  only being traceable by one tracer at a time
 
 ## Architecture
 
@@ -131,7 +147,7 @@ pkg/vfs/          - Virtual filesystem interface
 pkg/tracer/       - Ptrace-based syscall interception
 pkg/overlay/      - Overlay filesystem implementation
 pkg/passthrough/  - Simple passthrough VFS (reference implementation)
-cmd/fuss/         - CLI entry point
+cmd/fuss/         - CLI entrypoint
 ```
 
 ## License
