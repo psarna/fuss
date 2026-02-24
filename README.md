@@ -12,6 +12,8 @@
 
 Look ma, no FUSE! A userspace overlay filesystem implementation using ptrace-based syscall interception. No FUSE, no kernel modules, no mount permissions required.
 
+Writeup: [Look ma, no FUSE!](https://writethat.blog/fuss.html)
+
 ## What is this?
 
 fuss wraps your program and intercepts filesystem syscalls, redirecting them through a virtual filesystem layer compatible with overlayfs/fuse-overlayfs.
