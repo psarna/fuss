@@ -12,7 +12,7 @@ const (
 	AT_SYMLINK_NOFOLLOW = 0x100
 	AT_REMOVEDIR        = 0x200
 
-	O_DIRECTORY = 0200000
+	O_DIRECTORY = syscall.O_DIRECTORY
 )
 
 const AT_FDCWD_U64 = 0xffffffffffffff9c
