@@ -63,10 +63,10 @@ type ProcessState struct {
 	skipResult      *int64
 }
 
-func NewTracer(v vfs.VFS, mountpoint string) *Tracer {
+func NewTracer(v vfs.VFS, mountpoint string, backingPaths ...string) *Tracer {
 	return &Tracer{
 		vfs:      v,
-		resolver: NewPathResolver(mountpoint),
+		resolver: NewPathResolver(mountpoint, backingPaths...),
 		fdTable:  NewFDTable(),
 		procs:    make(map[int]*ProcessState),
 	}

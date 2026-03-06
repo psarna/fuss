@@ -18,6 +18,7 @@ const (
 	SYS_STATFS     = 43
 	SYS_CHDIR      = 49
 	SYS_FCHDIR     = 50
+	SYS_FACCESSAT  = 48
 	SYS_FCHMODAT   = 53
 	SYS_FCHOWNAT   = 54
 	SYS_OPENAT     = 56
@@ -43,7 +44,7 @@ const (
 	SYS_ACCESS   = 0xFFFF - 8
 )
 
-func sysno(regs *syscall.PtraceRegs) uint64       { return regs.Regs[8] }
+func sysno(regs *syscall.PtraceRegs) uint64        { return regs.Regs[8] }
 func setSysno(regs *syscall.PtraceRegs, v uint64)  { regs.Regs[8] = v }
 func retval(regs *syscall.PtraceRegs) uint64       { return regs.Regs[0] }
 func setRetval(regs *syscall.PtraceRegs, v uint64) { regs.Regs[0] = v }

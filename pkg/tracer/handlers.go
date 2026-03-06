@@ -72,6 +72,8 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleFchmodatEntry()
 	case SYS_FCHOWNAT:
 		h.handleFchownatEntry()
+	case SYS_FACCESSAT:
+		h.handleFaccessatEntry()
 	case SYS_FACCESSAT2:
 		h.handleFaccessat2Entry()
 	case SYS_GETXATTR:
@@ -790,6 +792,30 @@ func (h *SyscallHandler) handleFchownatEntry() {
 }
 
 func (h *SyscallHandler) handleFaccessat2Entry() {
+	dirfd := int(int32(arg0(h.regs)))
+	pathAddr := uintptr(arg1(h.regs))
+
+	vfsPath, intercept := h.readPathAt(dirfd, pathAddr)
+	if !intercept {
+		return
+	}
+
+	realPath, err := h.tracer.vfs.ResolvePath(vfsPath)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	setArg1(h.regs, uint64(newAddr))
+	setArg0(h.regs, AT_FDCWD_U64)
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
+func (h *SyscallHandler) handleFaccessatEntry() {
 	dirfd := int(int32(arg0(h.regs)))
 	pathAddr := uintptr(arg1(h.regs))
 

@@ -7,15 +7,58 @@ import (
 
 type PathResolver struct {
 	mountpoint string
+	backing    []string
 }
 
-func NewPathResolver(mountpoint string) *PathResolver {
+func normalizeRoot(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+	if abs == "." || abs == "" {
+		return ""
+	}
+	return abs
+}
+
+func NewPathResolver(mountpoint string, backing ...string) *PathResolver {
 	mp, _ := filepath.Abs(mountpoint)
 	mp = filepath.Clean(mp)
 	if !strings.HasSuffix(mp, "/") {
 		mp += "/"
 	}
-	return &PathResolver{mountpoint: mp}
+
+	var normalizedBacking []string
+	seen := map[string]struct{}{}
+	for _, root := range backing {
+		n := normalizeRoot(root)
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		normalizedBacking = append(normalizedBacking, n)
+	}
+
+	return &PathResolver{mountpoint: mp, backing: normalizedBacking}
+}
+
+func pathWithinRoot(path, root string) (string, bool) {
+	if path == root {
+		return "/", true
+	}
+	prefix := root + "/"
+	if strings.HasPrefix(path, prefix) {
+		rel := strings.TrimPrefix(path, prefix)
+		if rel == "" {
+			return "/", true
+		}
+		return "/" + rel, true
+	}
+	return "", false
 }
 
 func (r *PathResolver) ShouldIntercept(path string) bool {
@@ -34,7 +77,17 @@ func (r *PathResolver) ShouldIntercept(path string) bool {
 		return true
 	}
 
-	return strings.HasPrefix(absPath, r.mountpoint)
+	if strings.HasPrefix(absPath, r.mountpoint) {
+		return true
+	}
+
+	for _, root := range r.backing {
+		if _, ok := pathWithinRoot(absPath, root); ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *PathResolver) TranslatePath(path string) string {
@@ -58,6 +111,12 @@ func (r *PathResolver) TranslatePath(path string) string {
 			rel = "/" + rel
 		}
 		return rel
+	}
+
+	for _, root := range r.backing {
+		if rel, ok := pathWithinRoot(absPath, root); ok {
+			return rel
+		}
 	}
 
 	return path

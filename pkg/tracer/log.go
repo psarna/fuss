@@ -16,8 +16,8 @@ const (
 )
 
 var (
-	logger   = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	level    = parseLogLevel()
+	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	level  = parseLogLevel()
 )
 
 func parseLogLevel() logLevel {
@@ -106,6 +106,8 @@ func syscallName(sysno uint64) string {
 		return "fchmodat"
 	case SYS_FCHOWNAT:
 		return "fchownat"
+	case SYS_FACCESSAT:
+		return "faccessat"
 	case SYS_FACCESSAT2:
 		return "faccessat2"
 	case SYS_GETXATTR:

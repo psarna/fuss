@@ -149,7 +149,9 @@ func run(cmd *cobra.Command, args []string) error {
 		WhiteoutStyle: style,
 	})
 
-	t := tracer.NewTracer(vfs, mountpoint)
+	backingPaths := append([]string{}, lowerDirs...)
+	backingPaths = append(backingPaths, upperdir)
+	t := tracer.NewTracer(vfs, mountpoint, backingPaths...)
 
 	return t.Run(args)
 }

@@ -34,6 +34,7 @@ const (
 	SYS_LINKAT     = 265
 	SYS_SYMLINKAT  = 266
 	SYS_READLINKAT = 267
+	SYS_FACCESSAT  = 269
 	SYS_FCHMODAT   = 268
 	SYS_DUP3       = 292
 	SYS_RENAMEAT2  = 316
@@ -42,16 +43,16 @@ const (
 	SYS_FACCESSAT2 = 439
 )
 
-func sysno(regs *syscall.PtraceRegs) uint64  { return regs.Orig_rax }
-func setSysno(regs *syscall.PtraceRegs, v uint64) { regs.Orig_rax = v }
-func retval(regs *syscall.PtraceRegs) uint64  { return regs.Rax }
+func sysno(regs *syscall.PtraceRegs) uint64        { return regs.Orig_rax }
+func setSysno(regs *syscall.PtraceRegs, v uint64)  { regs.Orig_rax = v }
+func retval(regs *syscall.PtraceRegs) uint64       { return regs.Rax }
 func setRetval(regs *syscall.PtraceRegs, v uint64) { regs.Rax = v }
-func arg0(regs *syscall.PtraceRegs) uint64    { return regs.Rdi }
-func setArg0(regs *syscall.PtraceRegs, v uint64)  { regs.Rdi = v }
-func arg1(regs *syscall.PtraceRegs) uint64    { return regs.Rsi }
-func setArg1(regs *syscall.PtraceRegs, v uint64)  { regs.Rsi = v }
-func arg2(regs *syscall.PtraceRegs) uint64    { return regs.Rdx }
-func setArg2(regs *syscall.PtraceRegs, v uint64)  { regs.Rdx = v }
-func arg3(regs *syscall.PtraceRegs) uint64    { return regs.R10 }
-func setArg3(regs *syscall.PtraceRegs, v uint64)  { regs.R10 = v }
-func sp(regs *syscall.PtraceRegs) uint64      { return regs.Rsp }
+func arg0(regs *syscall.PtraceRegs) uint64         { return regs.Rdi }
+func setArg0(regs *syscall.PtraceRegs, v uint64)   { regs.Rdi = v }
+func arg1(regs *syscall.PtraceRegs) uint64         { return regs.Rsi }
+func setArg1(regs *syscall.PtraceRegs, v uint64)   { regs.Rsi = v }
+func arg2(regs *syscall.PtraceRegs) uint64         { return regs.Rdx }
+func setArg2(regs *syscall.PtraceRegs, v uint64)   { regs.Rdx = v }
+func arg3(regs *syscall.PtraceRegs) uint64         { return regs.R10 }
+func setArg3(regs *syscall.PtraceRegs, v uint64)   { regs.R10 = v }
+func sp(regs *syscall.PtraceRegs) uint64           { return regs.Rsp }
