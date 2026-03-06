@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"syscall"
 
-	"fuss/pkg/vfs"
+	"github.com/psarna/fuss/pkg/vfs"
 )
 
 const (

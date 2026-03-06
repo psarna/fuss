@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"fuss/pkg/overlay"
-	"fuss/pkg/tracer"
+	"github.com/psarna/fuss/pkg/overlay"
+	"github.com/psarna/fuss/pkg/tracer"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"

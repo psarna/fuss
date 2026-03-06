@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"fuss/pkg/vfs"
+	"github.com/psarna/fuss/pkg/vfs"
 
 	"golang.org/x/sys/unix"
 )

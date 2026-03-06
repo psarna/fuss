@@ -1,4 +1,4 @@
-module fuss
+module github.com/psarna/fuss
 
 go 1.24.0
 

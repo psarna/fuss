@@ -3,7 +3,7 @@ package overlay
 import (
 	"sort"
 
-	"fuss/pkg/vfs"
+	"github.com/psarna/fuss/pkg/vfs"
 )
 
 type DirMerger struct {
