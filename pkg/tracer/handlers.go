@@ -2,6 +2,10 @@ package tracer
 
 import (
 	"encoding/binary"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/psarna/fuss/pkg/vfs"
@@ -185,6 +189,19 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 		return "", false
 	}
 
+	// For relative paths with a dirfd, do not guess using cwd when the fd base
+	// is unknown. Resolve it from /proc/<pid>/fd/<dirfd> to avoid false intercepts.
+	if !filepath.IsAbs(path) && dirfd != AT_FDCWD {
+		if _, ok := h.proc.fdPaths[dirfd]; !ok {
+			if base, ok := h.resolveDirfdPath(dirfd); ok {
+				h.proc.fdPaths[dirfd] = base
+			} else {
+				debugf("readPathAt: unresolved dirfd=%d for path=%q, not intercepting", dirfd, path)
+				return "", false
+			}
+		}
+	}
+
 	resolved := h.tracer.resolver.ResolveAt(dirfd, path, h.proc.cwd, h.proc.fdPaths)
 	shouldIntercept := h.tracer.resolver.ShouldIntercept(resolved)
 	debugf("readPathAt: path=%q resolved=%q shouldIntercept=%v", path, resolved, shouldIntercept)
@@ -195,6 +212,23 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 	vfsPath := h.tracer.resolver.TranslatePath(resolved)
 	logIntercept(sysno(h.regs), path, resolved, vfsPath)
 	return vfsPath, true
+}
+
+func (h *SyscallHandler) resolveDirfdPath(dirfd int) (string, bool) {
+	fdPath := fmt.Sprintf("/proc/%d/fd/%d", h.proc.pid, dirfd)
+	target, err := os.Readlink(fdPath)
+	if err != nil {
+		debugf("resolveDirfdPath: readlink failed for %q: %v", fdPath, err)
+		return "", false
+	}
+
+	target = strings.TrimSuffix(target, " (deleted)")
+	if !filepath.IsAbs(target) {
+		debugf("resolveDirfdPath: non-absolute target for %q: %q", fdPath, target)
+		return "", false
+	}
+
+	return filepath.Clean(target), true
 }
 
 func (h *SyscallHandler) rewritePath(pathAddr uintptr, newPath string) (uintptr, error) {
@@ -1305,11 +1339,22 @@ func (h *SyscallHandler) handleFchdirExit() {
 		return
 	}
 
-	if path, ok := h.proc.fdPaths[pending.fd]; ok {
-		h.proc.cwd = path
-		logChdir(SYS_FCHDIR, h.proc.cwd)
-		debugf("fchdir: cwd now %q", h.proc.cwd)
+	path, ok := h.proc.fdPaths[pending.fd]
+	if !ok {
+		if resolved, resolvedOK := h.resolveDirfdPath(pending.fd); resolvedOK {
+			path = resolved
+			h.proc.fdPaths[pending.fd] = path
+			ok = true
+		}
 	}
+	if !ok {
+		debugf("fchdir: unable to resolve path for fd=%d", pending.fd)
+		return
+	}
+
+	h.proc.cwd = path
+	logChdir(SYS_FCHDIR, h.proc.cwd)
+	debugf("fchdir: cwd now %q", h.proc.cwd)
 }
 
 func (h *SyscallHandler) handleGetcwdEntry() {
