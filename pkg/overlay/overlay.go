@@ -40,6 +40,8 @@ func (fs *OverlayFS) resolve(path string) (realPath string, inUpper bool, err er
 
 	if _, err := os.Lstat(upperPath); err == nil {
 		return upperPath, true, nil
+	} else if errnoFromPathError(err) != syscall.ENOENT {
+		return "", false, errnoFromPathError(err)
 	}
 
 	dir := filepath.Dir(path)
@@ -50,6 +52,7 @@ func (fs *OverlayFS) resolve(path string) (realPath string, inUpper bool, err er
 		}
 	}
 
+	var firstErr error
 	for i, lower := range fs.lowerDirs {
 		lowerPath := filepath.Join(lower, path)
 
@@ -66,7 +69,13 @@ func (fs *OverlayFS) resolve(path string) (realPath string, inUpper bool, err er
 
 		if _, err := os.Lstat(lowerPath); err == nil {
 			return lowerPath, false, nil
+		} else if e := errnoFromPathError(err); e != syscall.ENOENT && firstErr == nil {
+			firstErr = e
 		}
+	}
+
+	if firstErr != nil {
+		return "", false, firstErr
 	}
 
 	return "", false, syscall.ENOENT
@@ -334,10 +343,7 @@ func (fs *OverlayFS) copyUpParents(path string) error {
 
 		realPath, _, err := fs.resolve(current)
 		if err != nil {
-			if err := os.MkdirAll(upperPath, 0755); err != nil {
-				return err
-			}
-			continue
+			return err
 		}
 
 		if err := copyUp(realPath, upperPath); err != nil {
@@ -446,4 +452,80 @@ func splitXattrList(data []byte) []string {
 		}
 	}
 	return result
+}
+
+func errnoFromPathError(err error) syscall.Errno {
+	if err == nil {
+		return 0
+	}
+	if errno, ok := err.(syscall.Errno); ok {
+		return errno
+	}
+	if pe, ok := err.(*os.PathError); ok {
+		if errno, ok := pe.Err.(syscall.Errno); ok {
+			return errno
+		}
+	}
+	return syscall.EIO
+}
+
+func (fs *OverlayFS) existsInLower(path string) bool {
+	for _, lower := range fs.lowerDirs {
+		lowerPath := filepath.Join(lower, path)
+		if _, err := os.Lstat(lowerPath); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (fs *OverlayFS) PlanRemove(path string, isDir bool) (realPath string, needsWhiteout bool, skipSyscall bool, err error) {
+	realPath, inUpper, err := fs.resolve(path)
+	if err != nil {
+		return "", false, false, err
+	}
+
+	st, statErr := os.Lstat(realPath)
+	if statErr != nil {
+		return "", false, false, errnoFromPathError(statErr)
+	}
+
+	if isDir {
+		if !st.IsDir() {
+			return "", false, false, syscall.ENOTDIR
+		}
+	} else {
+		if st.IsDir() {
+			return "", false, false, syscall.EISDIR
+		}
+	}
+
+	existsInLower := fs.existsInLower(path)
+	if inUpper {
+		return realPath, existsInLower, false, nil
+	}
+
+	if existsInLower {
+		return "", true, true, nil
+	}
+
+	return "", false, false, syscall.ENOENT
+}
+
+func (fs *OverlayFS) FinalizeRemove(path string, isDir bool) error {
+	if !fs.existsInLower(path) {
+		return nil
+	}
+
+	if isDir {
+		entries, err := fs.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return syscall.ENOTEMPTY
+		}
+	}
+
+	return fs.createWhiteout(path)
 }

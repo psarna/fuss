@@ -11,6 +11,7 @@ const (
 	SYS_DUP        = 23
 	SYS_DUP3       = 24
 	SYS_FCNTL      = 25
+	SYS_MKNODAT    = 33
 	SYS_MKDIRAT    = 34
 	SYS_UNLINKAT   = 35
 	SYS_SYMLINKAT  = 36

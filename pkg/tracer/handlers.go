@@ -33,6 +33,11 @@ type SyscallHandler struct {
 	vfsPath  string
 }
 
+type removePlanner interface {
+	PlanRemove(path string, isDir bool) (realPath string, needsWhiteout bool, skipSyscall bool, err error)
+	FinalizeRemove(path string, isDir bool) error
+}
+
 func (h *SyscallHandler) HandleEntry() {
 	nr := sysno(h.regs)
 	debugf("syscall entry: %d arg0=%x arg1=%x arg2=%x arg3=%x", nr, arg0(h.regs), arg1(h.regs), arg2(h.regs), arg3(h.regs))
@@ -126,6 +131,8 @@ func (h *SyscallHandler) HandleEntry() {
 		h.handleAccessEntry()
 	case SYS_MKNOD:
 		h.handleMknodEntry()
+	case SYS_MKNODAT:
+		h.handleMknodatEntry()
 	case SYS_TRUNCATE:
 		h.handleTruncateEntry()
 	case SYS_UTIME:
@@ -169,6 +176,8 @@ func (h *SyscallHandler) HandleExit() {
 		h.handleChdirExit()
 	case SYS_FCHDIR:
 		h.handleFchdirExit()
+	case SYS_UNLINK, SYS_RMDIR, SYS_UNLINKAT:
+		h.handleRemoveExit()
 	}
 }
 
@@ -178,15 +187,15 @@ func (h *SyscallHandler) skipSyscall(result int64) {
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
-func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) {
+func (h *SyscallHandler) readPathAtDetailed(dirfd int, pathAddr uintptr) (vfsPath string, intercept bool, readable bool) {
 	path, err := ReadString(h.proc.pid, pathAddr, 4096)
 	if err != nil {
 		debugf("readPathAt: ReadString failed: pid=%d addr=%x err=%v", h.proc.pid, pathAddr, err)
-		return "", false
+		return "", false, false
 	}
 	if path == "" {
 		debugf("readPathAt: empty path (pid=%d addr=%x)", h.proc.pid, pathAddr)
-		return "", false
+		return "", false, false
 	}
 
 	// For relative paths with a dirfd, do not guess using cwd when the fd base
@@ -197,7 +206,7 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 				h.proc.fdPaths[dirfd] = base
 			} else {
 				debugf("readPathAt: unresolved dirfd=%d for path=%q, not intercepting", dirfd, path)
-				return "", false
+				return "", false, true
 			}
 		}
 	}
@@ -206,12 +215,17 @@ func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) 
 	shouldIntercept := h.tracer.resolver.ShouldIntercept(resolved)
 	debugf("readPathAt: path=%q resolved=%q shouldIntercept=%v", path, resolved, shouldIntercept)
 	if !shouldIntercept {
-		return "", false
+		return "", false, true
 	}
 
-	vfsPath := h.tracer.resolver.TranslatePath(resolved)
+	vfsPath = h.tracer.resolver.TranslatePath(resolved)
 	logIntercept(sysno(h.regs), path, resolved, vfsPath)
-	return vfsPath, true
+	return vfsPath, true, true
+}
+
+func (h *SyscallHandler) readPathAt(dirfd int, pathAddr uintptr) (string, bool) {
+	vfsPath, intercept, _ := h.readPathAtDetailed(dirfd, pathAddr)
+	return vfsPath, intercept
 }
 
 func (h *SyscallHandler) resolveDirfdPath(dirfd int) (string, bool) {
@@ -617,55 +631,160 @@ func (h *SyscallHandler) handleUnlinkEntry() {
 		return
 	}
 
-	err := h.tracer.vfs.PrepareUnlink(vfsPath)
+	planner, ok := h.tracer.vfs.(removePlanner)
+	if !ok {
+		err := h.tracer.vfs.PrepareUnlink(vfsPath)
+		if err != nil {
+			h.skipSyscall(errnoFromError(err))
+			return
+		}
+		h.skipSyscall(0)
+		return
+	}
+
+	realPath, needsWhiteout, skipSyscall, err := planner.PlanRemove(vfsPath, false)
 	if err != nil {
 		h.skipSyscall(errnoFromError(err))
 		return
 	}
 
-	h.skipSyscall(0)
+	if skipSyscall {
+		if needsWhiteout {
+			if err := planner.FinalizeRemove(vfsPath, false); err != nil {
+				h.skipSyscall(errnoFromError(err))
+				return
+			}
+		}
+		h.skipSyscall(0)
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	setArg0(h.regs, uint64(newAddr))
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+	h.proc.pendingRemove = &pendingRemove{
+		vfsPath:       vfsPath,
+		isDir:         false,
+		needsWhiteout: needsWhiteout,
+	}
 }
 
 func (h *SyscallHandler) handleRmdirEntry() {
 	pathAddr := uintptr(arg0(h.regs))
+	rawPath, _ := ReadString(h.proc.pid, pathAddr, 4096)
+	if hasDotTail(rawPath) {
+		return
+	}
 
 	vfsPath, intercept := h.readPathAt(AT_FDCWD, pathAddr)
 	if !intercept {
 		return
 	}
 
-	err := h.tracer.vfs.PrepareRmdir(vfsPath)
+	planner, ok := h.tracer.vfs.(removePlanner)
+	if !ok {
+		err := h.tracer.vfs.PrepareRmdir(vfsPath)
+		if err != nil {
+			h.skipSyscall(errnoFromError(err))
+			return
+		}
+		h.skipSyscall(0)
+		return
+	}
+
+	realPath, needsWhiteout, skipSyscall, err := planner.PlanRemove(vfsPath, true)
 	if err != nil {
 		h.skipSyscall(errnoFromError(err))
 		return
 	}
 
-	h.skipSyscall(0)
+	if skipSyscall {
+		if needsWhiteout {
+			if err := planner.FinalizeRemove(vfsPath, true); err != nil {
+				h.skipSyscall(errnoFromError(err))
+				return
+			}
+		}
+		h.skipSyscall(0)
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	setArg0(h.regs, uint64(newAddr))
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+	h.proc.pendingRemove = &pendingRemove{
+		vfsPath:       vfsPath,
+		isDir:         true,
+		needsWhiteout: needsWhiteout,
+	}
 }
 
 func (h *SyscallHandler) handleUnlinkatEntry() {
 	dirfd := int(int32(arg0(h.regs)))
 	pathAddr := uintptr(arg1(h.regs))
 	flags := int(arg2(h.regs))
+	rawPath, _ := ReadString(h.proc.pid, pathAddr, 4096)
+	if flags&AT_REMOVEDIR != 0 && hasDotTail(rawPath) {
+		return
+	}
 
 	vfsPath, intercept := h.readPathAt(dirfd, pathAddr)
 	if !intercept {
 		return
 	}
 
-	var err error
-	if flags&AT_REMOVEDIR != 0 {
-		err = h.tracer.vfs.PrepareRmdir(vfsPath)
-	} else {
-		err = h.tracer.vfs.PrepareUnlink(vfsPath)
+	isDir := flags&AT_REMOVEDIR != 0
+	planner, ok := h.tracer.vfs.(removePlanner)
+	if !ok {
+		var err error
+		if isDir {
+			err = h.tracer.vfs.PrepareRmdir(vfsPath)
+		} else {
+			err = h.tracer.vfs.PrepareUnlink(vfsPath)
+		}
+		if err != nil {
+			h.skipSyscall(errnoFromError(err))
+			return
+		}
+		h.skipSyscall(0)
+		return
 	}
 
+	realPath, needsWhiteout, skipSyscall, err := planner.PlanRemove(vfsPath, isDir)
 	if err != nil {
 		h.skipSyscall(errnoFromError(err))
 		return
 	}
 
-	h.skipSyscall(0)
+	if skipSyscall {
+		if needsWhiteout {
+			if err := planner.FinalizeRemove(vfsPath, isDir); err != nil {
+				h.skipSyscall(errnoFromError(err))
+				return
+			}
+		}
+		h.skipSyscall(0)
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	setArg0(h.regs, AT_FDCWD_U64)
+	setArg1(h.regs, uint64(newAddr))
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+	h.proc.pendingRemove = &pendingRemove{
+		vfsPath:       vfsPath,
+		isDir:         isDir,
+		needsWhiteout: needsWhiteout,
+	}
 }
 
 func (h *SyscallHandler) handleRenameatEntry() {
@@ -673,9 +792,18 @@ func (h *SyscallHandler) handleRenameatEntry() {
 	oldPathAddr := uintptr(arg1(h.regs))
 	newDirfd := int(int32(arg2(h.regs)))
 	newPathAddr := uintptr(arg3(h.regs))
+	oldRaw, _ := ReadString(h.proc.pid, oldPathAddr, 4096)
+	newRaw, _ := ReadString(h.proc.pid, newPathAddr, 4096)
+	if hasDotTail(oldRaw) || hasDotTail(newRaw) {
+		return
+	}
 
-	oldVfsPath, oldIntercept := h.readPathAt(oldDirfd, oldPathAddr)
-	newVfsPath, newIntercept := h.readPathAt(newDirfd, newPathAddr)
+	oldVfsPath, oldIntercept, oldReadable := h.readPathAtDetailed(oldDirfd, oldPathAddr)
+	newVfsPath, newIntercept, newReadable := h.readPathAtDetailed(newDirfd, newPathAddr)
+
+	if !oldReadable || !newReadable {
+		return
+	}
 
 	if !oldIntercept && !newIntercept {
 		return
@@ -711,9 +839,18 @@ func (h *SyscallHandler) handleRenameatEntry() {
 func (h *SyscallHandler) handleRenameEntry() {
 	oldPathAddr := uintptr(arg0(h.regs))
 	newPathAddr := uintptr(arg1(h.regs))
+	oldRaw, _ := ReadString(h.proc.pid, oldPathAddr, 4096)
+	newRaw, _ := ReadString(h.proc.pid, newPathAddr, 4096)
+	if hasDotTail(oldRaw) || hasDotTail(newRaw) {
+		return
+	}
 
-	oldVfsPath, oldIntercept := h.readPathAt(AT_FDCWD, oldPathAddr)
-	newVfsPath, newIntercept := h.readPathAt(AT_FDCWD, newPathAddr)
+	oldVfsPath, oldIntercept, oldReadable := h.readPathAtDetailed(AT_FDCWD, oldPathAddr)
+	newVfsPath, newIntercept, newReadable := h.readPathAtDetailed(AT_FDCWD, newPathAddr)
+
+	if !oldReadable || !newReadable {
+		return
+	}
 
 	if !oldIntercept && !newIntercept {
 		return
@@ -748,8 +885,12 @@ func (h *SyscallHandler) handleLinkEntry() {
 	oldPathAddr := uintptr(arg0(h.regs))
 	newPathAddr := uintptr(arg1(h.regs))
 
-	oldVfsPath, oldIntercept := h.readPathAt(AT_FDCWD, oldPathAddr)
-	newVfsPath, newIntercept := h.readPathAt(AT_FDCWD, newPathAddr)
+	oldVfsPath, oldIntercept, oldReadable := h.readPathAtDetailed(AT_FDCWD, oldPathAddr)
+	newVfsPath, newIntercept, newReadable := h.readPathAtDetailed(AT_FDCWD, newPathAddr)
+
+	if !oldReadable || !newReadable {
+		return
+	}
 
 	if !oldIntercept && !newIntercept {
 		return
@@ -786,8 +927,12 @@ func (h *SyscallHandler) handleLinkatEntry() {
 	newDirfd := int(int32(arg2(h.regs)))
 	newPathAddr := uintptr(arg3(h.regs))
 
-	oldVfsPath, oldIntercept := h.readPathAt(oldDirfd, oldPathAddr)
-	newVfsPath, newIntercept := h.readPathAt(newDirfd, newPathAddr)
+	oldVfsPath, oldIntercept, oldReadable := h.readPathAtDetailed(oldDirfd, oldPathAddr)
+	newVfsPath, newIntercept, newReadable := h.readPathAtDetailed(newDirfd, newPathAddr)
+
+	if !oldReadable || !newReadable {
+		return
+	}
 
 	if !oldIntercept && !newIntercept {
 		return
@@ -1385,6 +1530,30 @@ func (h *SyscallHandler) handleGetcwdEntry() {
 	h.skipSyscall(int64(len(data)))
 }
 
+func (h *SyscallHandler) handleRemoveExit() {
+	if h.proc.pendingRemove == nil {
+		return
+	}
+
+	pending := h.proc.pendingRemove
+	h.proc.pendingRemove = nil
+
+	result := int64(retval(h.regs))
+	if result < 0 || !pending.needsWhiteout {
+		return
+	}
+
+	planner, ok := h.tracer.vfs.(removePlanner)
+	if !ok {
+		return
+	}
+
+	if err := planner.FinalizeRemove(pending.vfsPath, pending.isDir); err != nil {
+		setRetval(h.regs, uint64(errnoFromError(err)))
+		syscall.PtraceSetRegs(h.proc.pid, h.regs)
+	}
+}
+
 func (h *SyscallHandler) handleAccessEntry() {
 	pathAddr := uintptr(arg0(h.regs))
 
@@ -1426,6 +1595,30 @@ func (h *SyscallHandler) handleMknodEntry() {
 		return
 	}
 	setArg0(h.regs, uint64(newAddr))
+	syscall.PtraceSetRegs(h.proc.pid, h.regs)
+}
+
+func (h *SyscallHandler) handleMknodatEntry() {
+	dirfd := int(int32(arg0(h.regs)))
+	pathAddr := uintptr(arg1(h.regs))
+
+	vfsPath, intercept := h.readPathAt(dirfd, pathAddr)
+	if !intercept {
+		return
+	}
+
+	realPath, err := h.tracer.vfs.PrepareCreate(vfsPath)
+	if err != nil {
+		h.skipSyscall(errnoFromError(err))
+		return
+	}
+
+	newAddr, err := h.rewritePath(pathAddr, realPath)
+	if err != nil {
+		return
+	}
+	setArg0(h.regs, AT_FDCWD_U64)
+	setArg1(h.regs, uint64(newAddr))
 	syscall.PtraceSetRegs(h.proc.pid, h.regs)
 }
 
@@ -1555,4 +1748,8 @@ func errnoFromError(err error) int64 {
 
 func negErrno(e syscall.Errno) int64 {
 	return -int64(e)
+}
+
+func hasDotTail(path string) bool {
+	return path == "." || path == ".." || strings.HasSuffix(path, "/.") || strings.HasSuffix(path, "/..")
 }

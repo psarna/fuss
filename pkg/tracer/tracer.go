@@ -69,6 +69,12 @@ type pendingGetdents struct {
 	vfsPath string
 }
 
+type pendingRemove struct {
+	vfsPath       string
+	isDir         bool
+	needsWhiteout bool
+}
+
 type ProcessState struct {
 	pid             int
 	inSyscall       bool
@@ -78,6 +84,7 @@ type ProcessState struct {
 	pendingDup      *pendingDup
 	pendingChdir    *pendingChdir
 	pendingGetdents *pendingGetdents
+	pendingRemove   *pendingRemove
 	attached        bool
 	skipResult      *int64
 }
